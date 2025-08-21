@@ -17,6 +17,9 @@ import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import dayjs from 'dayjs';
 import type { Queue } from 'bull';
 import { InjectQueue } from '@nestjs/bull';
+import * as ExcelJS from 'exceljs';
+import { Response } from 'express';
+import { generateFileName } from '../utils/filename.util';
 
 @Injectable()
 export class CallRecordService {
@@ -349,5 +352,93 @@ export class CallRecordService {
     });
 
     return result.deletedCount ?? 0;
+  }
+
+  // =========================
+  // Export Excel
+  // =========================
+  async exportToExcel(
+    res: Response,
+    date?: string,
+    month?: number,
+    year?: number,
+  ) {
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('Call Records');
+
+    worksheet.addRow(['Date', 'Hour', 'Time', 'Close Reason', 'Source']);
+
+    // ✅ build query
+    const query: Record<string, any> = {};
+
+    if (date) {
+      query.date = parseDate(date).format('DD-MM-YYYY');
+    } else if (month && year) {
+      // filter by bulan & tahun
+      query.date = {
+        $regex: new RegExp(
+          `^\\d{2}-${String(month).padStart(2, '0')}-${year}$`,
+        ),
+      };
+    }
+
+    const records = await this.callRecordModel.find(query).lean();
+
+    records.forEach((r) => {
+      worksheet.addRow([r.date, r.hour, r.time, r.closeReason, r.source]);
+    });
+
+    const fileName = generateFileName('callrecord');
+
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+
+    await workbook.xlsx.write(res);
+    res.end();
+  }
+
+  // =========================
+  // Get Dates with Records
+  // Mengambil tanggal yang memiliki data call record
+  // =========================
+  async getAvailableDates(month: number, year: number): Promise<string[]> {
+    interface RecordAgg {
+      _id: string;
+    }
+
+    const records: RecordAgg[] =
+      await this.callRecordModel.aggregate<RecordAgg>([
+        {
+          $addFields: {
+            parsedDate: {
+              $dateFromString: { dateString: '$date', format: '%d-%m-%Y' },
+            },
+          },
+        },
+        {
+          $match: {
+            $expr: {
+              $and: [
+                { $eq: [{ $month: '$parsedDate' }, month] },
+                { $eq: [{ $year: '$parsedDate' }, year] },
+              ],
+            },
+          },
+        },
+        {
+          $project: {
+            dateStr: {
+              $dateToString: { format: '%d-%m-%Y', date: '$parsedDate' },
+            },
+          },
+        },
+        { $group: { _id: '$dateStr' } },
+        { $sort: { _id: 1 } },
+      ]);
+
+    return records.map((r) => r._id);
   }
 }

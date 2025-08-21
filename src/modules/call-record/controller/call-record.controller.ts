@@ -261,6 +261,96 @@ export class CallRecordController {
     res.end();
   }
 
+  @Get('export-monthly')
+  async exportMonthlySummaryToExcel(
+    @Query('month') month: number,
+    @Query('year') year: number,
+    @Res() res: Response,
+  ) {
+    if (!month || !year) {
+      throw new HttpException(
+        'Month & year query params are required, e.g. ?month=8&year=2025',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    // ✅ ambil semua tanggal unik dari Mongo
+    const availableDates: string[] =
+      await this.callRecordService.getAvailableDates(month, year);
+
+    if (!availableDates || availableDates.length === 0) {
+      throw new HttpException(
+        `No call records found for ${month}/${year}`,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+
+    const workbook = new ExcelJS.Workbook();
+
+    for (const dateStr of availableDates) {
+      const hourlyReport =
+        await this.callRecordService.getHourlyReport(dateStr);
+      const summary = await this.callRecordService.getDailySummary(dateStr);
+
+      const worksheet = workbook.addWorksheet(dateStr);
+
+      worksheet.columns = [
+        { header: 'Time', key: 'time', width: 20 },
+        { header: 'Qty', key: 'qty', width: 10 },
+        { header: 'TE Busy', key: 'teBusy', width: 10 },
+        { header: 'TE Busy %', key: 'teBusyPercent', width: 15 },
+        { header: 'Sys Busy', key: 'sysBusy', width: 10 },
+        { header: 'Sys Busy %', key: 'sysBusyPercent', width: 15 },
+        { header: 'Others', key: 'others', width: 10 },
+        { header: 'Others %', key: 'othersPercent', width: 15 },
+      ];
+
+      // ✅ isi data per jam
+      hourlyReport.forEach((row) => worksheet.addRow(row));
+
+      // ✅ row total
+      worksheet.addRow({
+        time: 'Total',
+        qty: summary.qty,
+        teBusy: summary.teBusy,
+        sysBusy: summary.sysBusy,
+        others: summary.others,
+      });
+
+      // ✅ row daily average
+      worksheet.addRow({
+        time: 'Daily Average',
+        teBusyPercent: summary.teBusyPercent,
+        sysBusyPercent: summary.sysBusyPercent,
+        othersPercent: summary.othersPercent,
+      });
+
+      // ✅ styling header
+      worksheet.getRow(1).font = { bold: true };
+
+      // ✅ styling semua cell
+      worksheet.eachRow((row) => {
+        row.alignment = { vertical: 'middle', horizontal: 'center' };
+      });
+    }
+
+    // ✅ nama file otomatis: callrecord_monthly_08-2025.xlsx
+    // ✅ nama file otomatis: callrecord_monthly_08-2025.xlsx
+    const filename = `callrecord_monthly_${month
+      .toString()
+      .padStart(2, '0')}-${year}.xlsx`;
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+
+    // ✅ cara aman kirim buffer langsung
+    const buffer = await workbook.xlsx.writeBuffer();
+    return res.send(buffer);
+  }
+
   @Get('files')
   async listUploadedFiles() {
     return this.callRecordService.getUploadedFiles();
